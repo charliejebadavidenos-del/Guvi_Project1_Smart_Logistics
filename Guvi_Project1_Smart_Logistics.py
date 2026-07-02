@@ -309,6 +309,8 @@ elif page == "Shipment - Filtering/Analytics":
     else:
         st.info("Add `cancellation_date` column to DB to enable Time-to-Cancellation analysis")
 
+    
+
 
 # ---------- PAGE 3: Potential Business Insights ----------
 elif page == "Potential Business Insights":
@@ -347,6 +349,7 @@ elif page == "Potential Business Insights":
             courier.vehicle_type,
             warehouses.state,
             warehouses.capacity,
+            warehouses.city,
             CASE 
                 WHEN delivery_date IS NOT NULL AND order_date IS NOT NULL
                 THEN DATEDIFF(delivery_date, order_date) + 1
@@ -378,56 +381,93 @@ elif page == "Potential Business Insights":
         df = df[df['courier_name'].isin(courier_filter)]
 
     # 7 Business Insights as tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "1. Route Delays", "2. Courier Volume", "3. Rating vs Speed", 
-        "4. Expensive Shipments", "5. Cost vs Weight", "6. Cancellations", "7. Underperforming Routes"
+        "4. Expensive Shipments", "5. Cost vs Weight", "6. Cancellations", "7. Underperforming Routes","8. Warehouse Insights"
     ])
 
     with tab1:
-        st.subheader("Which routes have the highest delays?")
+        st.subheader("Routes which has the highest delays")
         route_delay = df.groupby(['origin','destination'])['delivery_days'].mean().sort_values(ascending=False).head(10).reset_index()
         fig = px.bar(route_delay, x='origin', y='delivery_days', color='destination', title="Top 10 Delayed Routes")
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.subheader("Which couriers handle most shipments?")
+        st.subheader("Couriers which handled most shipments")
         courier_vol = df['courier_name'].value_counts().head(10).reset_index()
         fig = px.pie(courier_vol, names='courier_name', values='count', title="Shipment Volume by Courier")
         st.plotly_chart(fig)
 
     with tab3:
-        st.subheader("Are high-rated couriers delivering faster?")
+        st.subheader("High-rated couriers vs Fast delivery")
         fig = px.scatter(df, x='rating', y='delivery_days', color='courier_name', 
                         title="Courier Rating vs Avg Delivery Days")
         st.plotly_chart(fig)
 
     with tab4:
-        st.subheader("Which shipments are most expensive?")
+        st.subheader("Shipments are most expensive")
         top_cost = df.nlargest(10, 'total_cost')[['shipment_id','origin','destination','total_cost']]
         st.dataframe(top_cost)
 
     with tab5:
-        st.subheader("Is cost directly proportional to weight?")
+        st.subheader("Cost directly proportional to weight")
         fig = px.scatter(df, x='weight', y='total_cost', trendline="ols", title="Cost vs Weight")
         st.plotly_chart(fig)
 
     with tab6:
-        st.subheader("Which cities generate maximum cancellations?")
+        st.subheader("Cities generate maximum cancellations")
         cancel_df = df[df['shipment_status'] == 'Cancelled']
         city_cancel = cancel_df['origin'].value_counts().head(10).reset_index()
         fig = px.bar(city_cancel, x='origin', y='count', title="Top Cities by Cancellations")
         st.plotly_chart(fig)
 
     with tab7:
-        st.subheader("Which routes underperform relative to distance?")
+        st.subheader("Routes are underperforming relative to distance")
         df['delay_vs_expected'] = df['delivery_days'] - (df['distance_km'] / 500) # assuming 500km/day
         underperf = df.groupby(['origin','destination'])['delay_vs_expected'].mean().sort_values(ascending=False).head(10).reset_index()
         st.dataframe(underperf)
 
+    with tab8:
+        st.subheader("8. Warehouse Insights")
+
+
+        st.markdown("**1. Warehouse Capacity Comparison**")
+        # Remove duplicate cities first
+        warehouse_cap = df[['city','state','capacity']].drop_duplicates().sort_values('capacity', ascending=False)
+        
+        fig = px.bar(warehouse_cap, x='city', y='capacity', color='state',
+                    title="Capacity by Warehouse City")
+        fig.update_xaxes(tickangle=45)
+        st.plotly_chart(fig, use_container_width=True)
+
+   
+        st.markdown("**2. High-Traffic Warehouse Cities**")
+        
+        origin_traffic = df['origin'].value_counts().reset_index()
+        origin_traffic.columns = ['city', 'shipments']
+        origin_traffic['type'] = 'Origin'
+        
+        dest_traffic = df['destination'].value_counts().reset_index()
+        dest_traffic.columns = ['city', 'shipments'] 
+        dest_traffic['type'] = 'Destination'
+        
+        traffic_df = pd.concat([origin_traffic, dest_traffic], ignore_index=True)
+        
+        # Take top 15 cities by total shipments so names are readable
+        top_cities = traffic_df.groupby('city')['shipments'].sum().nlargest(15).index
+        traffic_df = traffic_df[traffic_df['city'].isin(top_cities)]
+        
+        fig2 = px.bar(traffic_df, x='city', y='shipments', color='type', barmode='group',
+                    title="Top 15 High-Traffic Cities - Origin vs Destination")
+        
+        fig2.update_layout(
+            height=500,
+            xaxis_tickangle=-45,  # 45 degree rotation
+            xaxis={'categoryorder':'total descending'}  # sort by traffic
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+                
     st.sidebar.info("Data from shipments + routes + tracking + costs + courier + warehouses")
-
-
-
 
 
 
@@ -499,55 +539,72 @@ elif page == "Implementation":
                 3. Build optimized SQL queries for KPIs.
                 4. Connect Streamlit to MySQL using a Python database connector.
                 5. Display real-time data with filtering options.
+                6. Create required indexes on the table. **
                 
     """)
 
-    st.subheader("Shipment Search & Filtering")
+    st.subheader("Shipment - Filtering/Analytics")
     st.markdown("""
-    Univariate - Examine columns one by one to understand their specific data distribution, spread, and target anomalies
-                        
-    Bivariate & Multivariate - Explore the active relationships, dependencies, and core patterns shared between multiple variables
+        
+        A. Shipment Search & Filtering
+                ● Search by shipment_id
                 
-                Refer to tabs Univariate,Bi-Variate and Multi-variate
+                ● Filter by:
+                    ○ Status (Delivered, Cancelled, In Transit)
+                    ○ Origin / Destination
+                    ○ Date range
+                    ○ Courier 
+                
+        📊 B. Operational KPIs
+                
+                ● Total Shipments
+                ● Delivered Shipments %
+                ● Cancelled Shipments %
+                ● Average Delivery Time
+                ● Total Operational Cost
+
+        📈 C. Analytical Views
+                
+        1️⃣ Delivery Performance Insights
+                ● Average delivery time per route
+                ● Most delayed routes
+                ● Delivery time vs distance comparison
+                
+        2️⃣ Courier Performance
+                ● Shipments handled per courier
+                ● On-time delivery %
+                ● Average rating comparison
+
+        3️⃣ Cost Analytics
+                ● Total cost per shipment
+                ● Cost per route
+                ● Fuel vs labor percentage contribution
+                ● High-cost shipments
+
+         4️⃣ Cancellation Analysis
+                ● Cancellation rate by origin
+                ● Cancellation rate by courier
+                ● Time-to-cancellation analysis
+
+        5️⃣ Warehouse Insights
+                ● Warehouse capacity comparison
+                ● High-traffic warehouse cities
 
     """)
 
-    st.subheader("EDA Report")
+    st.subheader("Potential Business Insights")
     st.markdown("""
     There were few questions provided on the project document.The results to the project report is 
                 
-                - Most common violations
-                - Areas or coordinates have the highest traffic incidents
-                - Demographics correlate with specific violation types
-                - Violation frequency vary by time of day, weekday, or month
-                - Types of vehicles / most often involved in violations
-                - How often do violations involve accidents, injuries, or vehicle damage
+                - Routes which has the highest delays
+                - Couriers which handled most shipments
+                - High-rated couriers vs Fast delivery
+                - Shipments are most expensive
+                - Cost directly proportional to weight
+                - Cities generate maximum cancellations
+                - Routes are underperforming relative to distance
     """)
 
-    st.subheader("Summary Statistics")
-    st.markdown("""
-    Based on the year provided and the Agency Statistics has been provided
-                
-                - Total Violations
-                - Accidents Involved
-                - High Risk Zones
-                - Total Number of Zones
-    """)
-
-    st.subheader("Geographical Heatmap of Incident Hotspots")
-    st.markdown("""
-                 This means targeted enforcement in just 10 areas can impact >30% of total violations. For city safety teams,
-                 this data supports predictive policing and optimized patrol allocation."
-                """)
-    
- 
-    st.subheader("Business Insights and recommendations")
-
-    st.markdown("""
-    - **Hotspot clustering**: Deploy more patrol vehicles + traffic cameras in Rockville/Silver Spring area. ROI will be highest there
-    - **Uneven distribution**: 80/20 rule applies: 20% locations cause 80% violations. Focus enforcement budget on Top 10 areas from your table  
-    - **Resource allocation**: Shift patrol shifts to peak hours + peak zones instead of city-wide coverage. Cuts cost, improves catch rate
-    """)
 
 # ---------- PAGE 5: Creator Info ----------
 elif page == "Creator Info":
