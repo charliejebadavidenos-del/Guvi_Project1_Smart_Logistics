@@ -4,6 +4,7 @@ import streamlit as st
 import mysql.connector
 import pandas as pd
 import matplotlib.pyplot as plt
+import plotly.express as px
 import seaborn as sns
 import pydeck as pdk
 from sqlalchemy import create_engine
@@ -30,7 +31,7 @@ st.set_page_config(page_title="Smart Logistics Management & Analytics Platform",
 
 # Sidebar for navigation
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Project Introduction", "Shipment Search & Filtering","Potential Business Insights", "Implementation","Creator Info"])
+page = st.sidebar.radio("Go to", ["Project Introduction", "Shipment - Filtering/Analytics","Potential Business Insights", "Implementation","Creator Info"])
 
 # -------------------------------- PAGE 1: Introduction --------------------------------
 if page == "Project Introduction":
@@ -52,8 +53,8 @@ if page == "Project Introduction":
 
 
 
-# ---------- PAGE 2: Shipment Search & Filtering ----------
-elif page == "Shipment Search & Filtering":
+# ---------- PAGE 2: Shipment - Filtering/Analytics ----------
+elif page == "Shipment - Filtering/Analytics":
     st.title("Shipment Search & Filtering")
     
     # 1. Fetch all filter options first - keep this at top
@@ -311,45 +312,119 @@ elif page == "Shipment Search & Filtering":
 
 # ---------- PAGE 3: Potential Business Insights ----------
 elif page == "Potential Business Insights":
-
     st.set_page_config(page_title="Potential Business Insights", layout="wide")
-    st.title("📈 Potential Business Insights")
+    st.title("📦 Smart Logistics - Business Insights Dashboard")
 
-    # DB connection function for this page
-    @st.cache_data(ttl=600)
-    def run_query(query):
+    # 1. DB Connection - replace with your credentials
+    @st.cache_data
+    def load_data():
         conn = mysql.connector.connect(
             host="localhost",
-            user="root",
-            password="hopePraise8gt", # change to your MySQL password
-            database="guvi_db",
-            port=3306
+            user="root", 
+            password="hopePraise8gt",
+            database="guvi_db"
         )
-        df = pd.read_sql_query(query, conn)
+        
+        query = """
+        SELECT shipments.shipment_id,
+            shipments.order_date,
+            shipments.origin,
+            shipments.destination,
+            routes.distance_km,
+            routes.avg_time_hours,
+            shipments.weight,
+            shipments.courier_id,
+            shipments.status as shipment_status,
+            shipments.delivery_date,
+            tracking.tracking_id,
+            tracking.status as tracking_status,
+            tracking.timestamp,
+            costs.fuel_cost,
+            costs.labor_cost,
+            costs.misc_cost,
+            courier.name as courier_name,
+            courier.rating,
+            courier.vehicle_type,
+            warehouses.state,
+            warehouses.capacity,
+            CASE 
+                WHEN delivery_date IS NOT NULL AND order_date IS NOT NULL
+                THEN DATEDIFF(delivery_date, order_date) + 1
+            END AS delivery_days,
+            COALESCE(costs.fuel_cost, 0) + COALESCE(costs.labor_cost, 0) + COALESCE(costs.misc_cost, 0) as total_cost
+        FROM guvi_db.shipments shipments
+        LEFT JOIN guvi_db.shipment_tracking tracking ON shipments.shipment_id = tracking.shipment_id
+        LEFT JOIN guvi_db.costs costs ON shipments.shipment_id = costs.shipment_id
+        LEFT JOIN guvi_db.routes routes ON routes.origin = shipments.origin AND routes.destination = shipments.destination
+        LEFT JOIN guvi_db.courier_staff courier ON shipments.courier_id = courier.courier_id
+        LEFT JOIN guvi_db.warehouses warehouses ON warehouses.city = shipments.origin
+        """
+        df = pd.read_sql(query, conn)
         conn.close()
         return df
 
-    st.divider()
-    st.subheader("Filters")
+    df = load_data()
 
-    # Filters - same as Summary page so analysis is consistent
-    years = run_query("SELECT DISTINCT YEAR(`Date Of Stop`) as yr FROM guvi_db.Traffic_Violations ORDER BY yr DESC")['yr'].tolist()
-    year = st.sidebar.selectbox("Select Year", years)
+    # Filters
+    col1, col2 = st.columns(2)
+    with col1:
+        origin_filter = st.multiselect("Filter by Origin", df['origin'].unique())
+    with col2:
+        courier_filter = st.multiselect("Filter by Courier", df['courier_name'].unique())
 
-    agencies = run_query("SELECT DISTINCT Agency FROM guvi_db.Traffic_Violations ORDER BY Agency")['Agency'].tolist()
-    agency = st.sidebar.multiselect("Select Agency", agencies, default=agencies)
+    if origin_filter:
+        df = df[df['origin'].isin(origin_filter)]
+    if courier_filter:
+        df = df[df['courier_name'].isin(courier_filter)]
 
-    # Build WHERE clause
-    where_clauses = [f"YEAR(`Date Of Stop`) = {year}"]
-    if agency:
-        agency_str = "','".join([str(a).replace("'", "''") for a in agency])
-        where_clauses.append(f"Agency IN ('{agency_str}')")
-    where_sql = " AND ".join(where_clauses)
+    # 7 Business Insights as tabs
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "1. Route Delays", "2. Courier Volume", "3. Rating vs Speed", 
+        "4. Expensive Shipments", "5. Cost vs Weight", "6. Cancellations", "7. Underperforming Routes"
+    ])
 
-    st.markdown(f"**Analyzing data for:** Year = {year} | Agency = {agency if agency else 'All'}")
-    st.divider()
+    with tab1:
+        st.subheader("Which routes have the highest delays?")
+        route_delay = df.groupby(['origin','destination'])['delivery_days'].mean().sort_values(ascending=False).head(10).reset_index()
+        fig = px.bar(route_delay, x='origin', y='delivery_days', color='destination', title="Top 10 Delayed Routes")
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Structured Analysis")
+    with tab2:
+        st.subheader("Which couriers handle most shipments?")
+        courier_vol = df['courier_name'].value_counts().head(10).reset_index()
+        fig = px.pie(courier_vol, names='courier_name', values='count', title="Shipment Volume by Courier")
+        st.plotly_chart(fig)
+
+    with tab3:
+        st.subheader("Are high-rated couriers delivering faster?")
+        fig = px.scatter(df, x='rating', y='delivery_days', color='courier_name', 
+                        title="Courier Rating vs Avg Delivery Days")
+        st.plotly_chart(fig)
+
+    with tab4:
+        st.subheader("Which shipments are most expensive?")
+        top_cost = df.nlargest(10, 'total_cost')[['shipment_id','origin','destination','total_cost']]
+        st.dataframe(top_cost)
+
+    with tab5:
+        st.subheader("Is cost directly proportional to weight?")
+        fig = px.scatter(df, x='weight', y='total_cost', trendline="ols", title="Cost vs Weight")
+        st.plotly_chart(fig)
+
+    with tab6:
+        st.subheader("Which cities generate maximum cancellations?")
+        cancel_df = df[df['shipment_status'] == 'Cancelled']
+        city_cancel = cancel_df['origin'].value_counts().head(10).reset_index()
+        fig = px.bar(city_cancel, x='origin', y='count', title="Top Cities by Cancellations")
+        st.plotly_chart(fig)
+
+    with tab7:
+        st.subheader("Which routes underperform relative to distance?")
+        df['delay_vs_expected'] = df['delivery_days'] - (df['distance_km'] / 500) # assuming 500km/day
+        underperf = df.groupby(['origin','destination'])['delay_vs_expected'].mean().sort_values(ascending=False).head(10).reset_index()
+        st.dataframe(underperf)
+
+    st.sidebar.info("Data from shipments + routes + tracking + costs + courier + warehouses")
 
 
 
